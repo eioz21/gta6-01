@@ -1,1 +1,6 @@
+# Node modules, build output, editor junk.
+node_modules/
 out/
+.DS_Store
+*.log
+.check/

@@ -1,9 +1,15 @@
-// Solmar Bay — the entry program for make.fun's gta6-01 bounty.
-// Node 22, standard library only, no build step: it copies this repository's
-// game/ and screenshots/ into the grader's output directory and writes
-// /output/dossier.json with the kit's vendored library, so the judge can read
-// the game. Run it locally with:
+// Solmar Bay — gta6-01 entry program (Node 22, standard library only).
+//
+// The game lives in this repository's game/ folder as plain static files: an
+// index.html plus ES modules, no build step, no network request. This program
+// hands it in: it copies game/ and screenshots/ beside this file into the
+// output directory and writes /output/dossier.json with the vendored make.fun
+// library (vendor/makefun-game.ts, the kit's copy, unchanged).
+//
+// Run it locally with:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Outside the grader MAKEFUN_OUTPUT_DIR stands in for /output.
+// Play the game locally with `node serve.ts` (http://localhost:8080).
 
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,10 +26,11 @@ if (existsSync(join(here, 'screenshots'))) {
   cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 }
 
-// The gate's own caps, as RULES.txt names them: the dossier text cap shapes
-// the bytes; the rest refuse an entry the scorer would refuse (more than 4
-// screenshots or one over 256 KiB; game/ past 993 entries or 48 MiB, or a
-// path over 1000 bytes).
+// The gate's caps (reference/gate.json): text_max_bytes shapes the dossier's
+// text; the other limits refuse an entry the scorer would refuse (more than 4
+// screenshots, one over 256 KiB; game/ over 993 files or 48 MiB, a game/ path
+// over 1000 bytes). /output itself caps at 1000 entries and 64 MiB, shared
+// by game/, screenshots/ and dossier.json, so leave it room.
 writeFileSync(
   join(out, 'dossier.json'),
   buildDossier(out, {
