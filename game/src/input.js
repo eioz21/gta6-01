@@ -1,63 +1,72 @@
-// input.js — keyboard and mouse state, kept in one place so the game loop
-// and the menus read the same keys. Keys are tracked by their `code`
-// (KeyW, ArrowUp, Space...) so layouts do not matter.
+// Keyboard + mouse state. One instance, shared by the whole game.
+// Keys are tracked by code (KeyW, ArrowUp, ...). justPressed() answers once.
+const KEY_ALIASES = {
+  KeyW: 'up', ArrowUp: 'up',
+  KeyS: 'down', ArrowDown: 'down',
+  KeyA: 'left', ArrowLeft: 'left',
+  KeyD: 'right', ArrowRight: 'right',
+  ShiftLeft: 'run', ShiftRight: 'run',
+  Space: 'brake',
+  KeyE: 'enter',
+  KeyF: 'melee',
+  KeyR: 'reload',
+  KeyT: 'taxi',
+  KeyM: 'mute',
+  KeyP: 'pause', Escape: 'pause',
+  Enter: 'confirm',
+  Digit1: 'weapon1', Digit2: 'weapon2',
+  KeyH: 'horn',
+  KeyN: 'new',
+  KeyQ: 'quit',
+};
 
-export function createInput(canvas) {
-  const keys = new Set();
-  const pressed = new Set(); // keys pressed since the last frame was consumed
-  const mouse = { x: 0, y: 0, down: false, clicked: false, rightDown: false };
+export class Input {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.down = new Set();
+    this.pressed = new Set();
+    this.mouseX = 0;
+    this.mouseY = 0;
+    this.mouseDown = false;
+    this.mousePressed = false;
+    this.anyKey = false;
+    this._onKeyDown = (e) => {
+      if (e.code === 'Space') e.preventDefault();
+      const action = KEY_ALIASES[e.code];
+      if (action) {
+        if (!this.down.has(action)) this.pressed.add(action);
+        this.down.add(action);
+      }
+      this.anyKey = true;
+    };
+    this._onKeyUp = (e) => {
+      const action = KEY_ALIASES[e.code];
+      if (action) this.down.delete(action);
+    };
+    this._onMouseMove = (e) => {
+      const rect = this.canvas.getBoundingClientRect();
+      this.mouseX = e.clientX - rect.left;
+      this.mouseY = e.clientY - rect.top;
+    };
+    this._onMouseDown = (e) => {
+      if (e.button === 0) {
+        this.mouseDown = true;
+        this.mousePressed = true;
+        this.anyKey = true;
+      }
+    };
+    this._onMouseUp = (e) => { if (e.button === 0) this.mouseDown = false; };
+    this._onBlur = () => { this.down.clear(); this.mouseDown = false; };
+    window.addEventListener('keydown', this._onKeyDown);
+    window.addEventListener('keyup', this._onKeyUp);
+    window.addEventListener('mousemove', this._onMouseMove);
+    window.addEventListener('mousedown', this._onMouseDown);
+    window.addEventListener('mouseup', this._onMouseUp);
+    window.addEventListener('blur', this._onBlur);
+  }
 
-  const down = (e) => {
-    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
-    if (!keys.has(e.code)) pressed.add(e.code);
-    keys.add(e.code);
-  };
-  const up = (e) => keys.delete(e.code);
-
-  window.addEventListener('keydown', down);
-  window.addEventListener('keyup', up);
-  window.addEventListener('blur', () => keys.clear());
-
-  canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    mouse.x = (e.clientX - rect.left) * (canvas.width / rect.width);
-    mouse.y = (e.clientY - rect.top) * (canvas.height / rect.height);
-  });
-  canvas.addEventListener('mousedown', (e) => {
-    // A click counts even without a prior mouse move: record the position here.
-    const rect = canvas.getBoundingClientRect();
-    mouse.x = (e.clientX - rect.left) * (canvas.width / rect.width);
-    mouse.y = (e.clientY - rect.top) * (canvas.height / rect.height);
-    if (e.button === 0) { mouse.down = true; mouse.clicked = true; }
-    if (e.button === 2) mouse.rightDown = true;
-  });
-  window.addEventListener('mouseup', (e) => {
-    if (e.button === 0) mouse.down = false;
-    if (e.button === 2) mouse.rightDown = false;
-  });
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
-  return {
-    keys,
-    mouse,
-    down(code) { return keys.has(code); },
-    /** True once, the frame the key went down. */
-    wasPressed(code) { return pressed.has(code); },
-    /** WASD/arrows as a -1..1 pair, normalised. */
-    moveVector() {
-      let x = 0;
-      let y = 0;
-      if (keys.has('KeyA') || keys.has('ArrowLeft')) x -= 1;
-      if (keys.has('KeyD') || keys.has('ArrowRight')) x += 1;
-      if (keys.has('KeyW') || keys.has('ArrowUp')) y -= 1;
-      if (keys.has('KeyS') || keys.has('ArrowDown')) y += 1;
-      if (x !== 0 && y !== 0) { x *= Math.SQRT1_2; y *= Math.SQRT1_2; }
-      return { x, y };
-    },
-    /** Clear the one-frame edges after the game has read them. */
-    endFrame() {
-      pressed.clear();
-      mouse.clicked = false;
-    },
-  };
+  is(action) { return this.down.has(action); }
+  justPressed(action) { return this.pressed.has(action); }
+  // Call once per frame, after the game has read the input.
+  endFrame() { this.pressed.clear(); this.mousePressed = false; this.anyKey = false; }
 }

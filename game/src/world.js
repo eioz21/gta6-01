@@ -1,182 +1,217 @@
-// world.js — builds Solmar Bay: a road grid, city blocks full of buildings,
-// parks, a beach and water along the south edge, and the docks on the west.
-// It also answers the two questions the rest of the game keeps asking:
-// "is this point inside a solid building?" and "where is the nearest road?"
+// Solmar Bay itself: the road grid, the blocks, the buildings, the beach and
+// the harbor, plus collision and district lookups. The city is generated from
+// a fixed seed, so every playthrough walks the same streets.
+import { WORLD, ROAD_LINES, ROAD_HALF, ROAD_SPACING, clamp } from './config.js';
+import { makeRng, hash2 } from './rng.js';
 
-import { WORLD, PALETTE } from './config.js';
-import { makeRng } from './rng.js';
+const BUILDING_COLORS = [
+  '#c9a37e', '#b98d6e', '#a8b8c4', '#c4b49a', '#8fa8b8', '#d8c8a8',
+  '#b8a0a0', '#9ab8a0', '#c4a8b8', '#e0d0b8', '#7a90a8', '#d0b090',
+];
+const DOWNTOWN_COLORS = ['#5a6b84', '#4a5a74', '#6b7a94', '#3e4c64', '#7a8aa8', '#54647e'];
+const ROOF_COLORS = ['#5a4a3a', '#6b5a4a', '#4a5a6b', '#7a6a5a', '#3a4a3a'];
 
-const ROOF_COLORS = ['#8d6e63', '#a1887f', '#6d4c41', '#795548', '#7b8d8f', '#546e7a', '#b0a090', '#93806a'];
-const WALL_COLORS = ['#bcaaa4', '#a5a5a0', '#c9b8a8', '#9db3b8', '#c4b49a'];
+// Named places the missions use (world coordinates).
+export const PLACES = {
+  vinceOffice: { x: 1600, y: 1400, name: "Vince's Office" },
+  marasGarage: { x: 1000, y: 2200, name: "Mara's Garage" },
+  harborDocks: { x: 260, y: 600, name: 'Harbor Docks' },
+  solmarBank: { x: 1800, y: 1600, name: 'Solmar Bank' },
+  casino: { x: 2200, y: 1800, name: 'The Palmetto Casino' },
+  hospital: { x: 1400, y: 1000, name: 'Solmar General Hospital' },
+  policeHQ: { x: 2000, y: 1000, name: 'Solmar PD HQ' },
+  beachPier: { x: 1600, y: 3080, name: 'Beach Pier' },
+  industrial: { x: 1000, y: 2600, name: 'Industrial Yard' },
+  airport: { x: 2800, y: 2800, name: 'Solmar Airfield' },
+};
 
-export function roadCentres() {
-  const lines = [];
-  for (let p = 240; p < WORLD.size; p += WORLD.roadGap) lines.push(p);
-  return lines;
-}
-
-/** Build the whole city from a seed. Deterministic: same seed, same city. */
-export function buildCity(seed) {
-  const rng = makeRng(seed);
-  const lines = roadCentres();
-  const buildings = [];
-  const parks = [];
-  const trees = [];
-  const props = []; // crates, containers, lamps, benches — small decor with no collision
-
-  const beachTop = WORLD.size - 260; // sand strip, then water to the edge
-  const dockX = 300; // the docks occupy the west edge below the old town
-
-  // One block = the square between four roads. Fill most blocks with buildings.
-  for (let i = 0; i < lines.length - 1; i += 1) {
-    for (let j = 0; j < lines.length - 1; j += 1) {
-      const x0 = lines[i] + WORLD.roadWidth / 2 + WORLD.sidewalk;
-      const y0 = lines[j] + WORLD.roadWidth / 2 + WORLD.sidewalk;
-      const x1 = lines[i + 1] - WORLD.roadWidth / 2 - WORLD.sidewalk;
-      const y1 = lines[j + 1] - WORLD.roadWidth / 2 - WORLD.sidewalk;
-      if (y0 > beachTop) continue; // beach, no buildings
-      if (x0 < dockX && y0 > 2200) continue; // docks, handled below
-      const cx = (x0 + x1) / 2;
-      const cy = (y0 + y1) / 2;
-      const downtown = cx > 1200 && cx < 2400 && cy > 900 && cy < 2100;
-      if (rng.chance(downtown ? 0.06 : 0.16)) {
-        // A park instead of buildings.
-        parks.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
-        const n = rng.int(4, 9);
-        for (let t = 0; t < n; t += 1) {
-          trees.push({ x: rng.range(x0 + 14, x1 - 14), y: rng.range(y0 + 14, y1 - 14), r: rng.range(7, 12) });
-        }
-        continue;
-      }
-      // Split the block into 1-4 buildings.
-      const splitX = rng.chance(0.55);
-      const splitY = rng.chance(0.55);
-      const xs = splitX ? [x0, (x0 + x1) / 2, x1] : [x0, x1];
-      const ys = splitY ? [y0, (y0 + y1) / 2, y1] : [y0, y1];
-      for (let a = 0; a < xs.length - 1; a += 1) {
-        for (let b = 0; b < ys.length - 1; b += 1) {
-          if (rng.chance(0.12)) continue; // an empty lot
-          const bx = xs[a] + 8;
-          const by = ys[b] + 8;
-          const bw = xs[a + 1] - xs[a] - 16;
-          const bh = ys[b + 1] - ys[b] - 16;
-          if (bw < 30 || bh < 30) continue;
-          const tall = downtown && rng.chance(0.7);
-          buildings.push({
-            x: bx,
-            y: by,
-            w: bw,
-            h: bh,
-            height: tall ? rng.int(26, 60) : rng.int(8, 20),
-            roof: rng.pick(ROOF_COLORS),
-            wall: rng.pick(WALL_COLORS),
-            downtown,
-          });
-        }
-      }
-    }
-  }
-
-  // Docks: container stacks and warehouses along the west edge.
-  for (let y = 2300; y < WORLD.size - 300; y += 190) {
-    buildings.push({
-      x: 40, y, w: 170, h: 120, height: 14, roof: '#5d4037', wall: '#8d6e63', downtown: false, warehouse: true,
-    });
-    for (let c = 0; c < 3; c += 1) {
-      props.push({
-        kind: 'container',
-        x: 250 + c * 46,
-        y: y + 20 + (c % 2) * 44,
-        w: 40,
-        h: 20,
-        color: rng.pick(['#c0392b', '#2471a3', '#b7950b', '#1e8449']),
-      });
-    }
-  }
-
-  // Lamps along every road, on both sides.
-  for (const line of lines) {
-    for (let p = 300; p < WORLD.size - 100; p += 420) {
-      props.push({ kind: 'lamp', x: line - WORLD.roadWidth / 2 - 8, y: p, w: 4, h: 4, color: '#f5d76e' });
-      props.push({ kind: 'lamp', x: line + WORLD.roadWidth / 2 + 8, y: p + 210, w: 4, h: 4, color: '#f5d76e' });
-    }
-  }
-
-  return {
-    seed,
-    lines,
-    buildings,
-    parks,
-    trees,
-    props,
-    beachTop,
-    dockX,
-    // Named places the missions and the HUD point at.
-    places: {
-      safehouse: { x: 660, y: 660, name: 'Safehouse' },
-      garage: { x: 1500, y: 2700, name: "Rosa's Garage" },
-      docks: { x: 220, y: 2700, name: 'Solmar Docks' },
-      marina: { x: 3050, y: 3050, name: 'Marina' },
-      hotel: { x: 2100, y: 1500, name: 'Hotel Mirada' },
-      bank: { x: 1800, y: 1200, name: 'Bay National Bank' },
-      diner: { x: 1020, y: 1860, name: "Lou's Diner" },
-      plaza: { x: 1800, y: 1800, name: 'Plaza Verde' },
-      beach: { x: 1800, y: 3450, name: 'Solmar Beach' },
-      hospital: { x: 2700, y: 660, name: 'St. Ana Hospital' },
-    },
-  };
-}
-
-/** True when a circle at (x, y) with radius r overlaps any building or the map edge. */
-export function isSolid(city, x, y, r) {
-  if (x < r || y < r || x > WORLD.size - r || y > WORLD.size - r) return true;
-  for (let i = 0; i < city.buildings.length; i += 1) {
-    const b = city.buildings[i];
-    if (x + r > b.x && x - r < b.x + b.w && y + r > b.y && y - r < b.y + b.h) return true;
-  }
-  return false;
-}
-
-/** Slide a circle along the world: try x then y, so it hugs walls instead of sticking. */
-export function moveWithCollision(city, obj, dx, dy) {
-  if (!isSolid(city, obj.x + dx, obj.y, obj.radius)) obj.x += dx;
-  if (!isSolid(city, obj.x, obj.y + dy, obj.radius)) obj.y += dy;
-}
-
-/** The nearest point on any road centreline to (x, y). */
-export function nearestRoadPoint(city, x, y) {
-  let bestX = city.lines[0];
-  let bestD = Infinity;
-  for (const line of city.lines) {
-    const d = Math.abs(line - x);
-    if (d < bestD) { bestD = d; bestX = line; }
-  }
-  let bestY = city.lines[0];
-  bestD = Infinity;
-  for (const line of city.lines) {
-    const d = Math.abs(line - y);
-    if (d < bestD) { bestD = d; bestY = line; }
-  }
-  return { x: bestX, y: bestY };
-}
-
-/** True when the point is on asphalt (drivable road surface). */
-export function onRoad(city, x, y) {
-  const half = WORLD.roadWidth / 2;
-  for (const line of city.lines) {
-    if (Math.abs(x - line) <= half || Math.abs(y - line) <= half) return true;
-  }
-  return false;
-}
-
-/** Which district a point is in, for the HUD's location label. */
 export function districtAt(x, y) {
-  if (y > WORLD.size - 260) return 'Solmar Beach';
-  if (x < 300 && y > 2200) return 'Solmar Docks';
-  if (x > 1200 && x < 2400 && y > 900 && y < 2100) return 'Downtown';
-  if (y > 2100 && x > 2400) return 'Marina District';
-  if (y < 900) return 'North Hills';
-  return 'Old Town';
+  if (x < 260) return 'Harbor';
+  if (y > 2960) return 'Beachfront';
+  if (x > 2960) return 'Marina';
+  if (x >= 1200 && x <= 2200 && y >= 1200 && y <= 2200) return 'Downtown';
+  if (x < 1200 && y < 1200) return 'Old Town';
+  if (x >= 2200 && y < 1200) return 'Hillside';
+  if (x < 1200 && y >= 2200) return 'Southside';
+  if (x >= 2200 && y >= 2200) return 'Eastside';
+  return 'Northgate';
 }
 
-export { PALETTE };
+export function streetNameAt(x, y) {
+  const ns = ['Harbor Row', 'Coral Ave', 'Palm Blvd', 'Sunset Dr', 'Marina Way', 'Juniper St', 'Cactus Ln', 'Bayview Ave'];
+  const ew = ['Ocean Pkwy', 'Sierra St', 'Flamingo Ave', 'Lighthouse Rd', 'Citrus Blvd', 'Anchor St', 'Pelican Way', 'Boardwalk'];
+  let best = null; let bestD = Infinity; let axis = 'ns';
+  for (let i = 0; i < ROAD_LINES.length; i += 1) {
+    const d = Math.abs(x - ROAD_LINES[i]);
+    if (d < bestD) { bestD = d; best = ns[i]; axis = 'ns'; }
+    const d2 = Math.abs(y - ROAD_LINES[i]);
+    if (d2 < bestD) { bestD = d2; best = ew[i]; axis = 'ew'; }
+  }
+  return { name: best, axis };
+}
+
+export class City {
+  constructor(seed = 20261123) {
+    this.seed = seed;
+    this.buildings = [];
+    this.parks = [];
+    this.trees = [];
+    this.lamps = [];
+    this.parkingLots = [];
+    this.generate();
+  }
+
+  generate() {
+    const rng = makeRng(this.seed);
+    // Blocks sit between roads. Block (i, j) spans the square between road
+    // lines i and i+1 horizontally and j and j+1 vertically.
+    for (let i = 0; i < ROAD_LINES.length - 1; i += 1) {
+      for (let j = 0; j < ROAD_LINES.length - 1; j += 1) {
+        const x0 = ROAD_LINES[i] + ROAD_HALF + 14;
+        const y0 = ROAD_LINES[j] + ROAD_HALF + 14;
+        const x1 = ROAD_LINES[i + 1] - ROAD_HALF - 14;
+        const y1 = ROAD_LINES[j + 1] - ROAD_HALF - 14;
+        const cx = (x0 + x1) / 2; const cy = (y0 + y1) / 2;
+        const downtown = cx >= 1200 && cx <= 2200 && cy >= 1200 && cy <= 2200;
+        const roll = hash2(i, j, this.seed);
+        if (roll < 0.12) {
+          // Park: green square with trees.
+          this.parks.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+          const n = 5 + Math.floor(hash2(i, j, 7) * 5);
+          for (let t = 0; t < n; t += 1) {
+            this.trees.push({ x: x0 + 30 + hash2(i, j, 100 + t) * (x1 - x0 - 60), y: y0 + 30 + hash2(i, j, 200 + t) * (y1 - y0 - 60), r: 9 + hash2(i, j, 300 + t) * 7 });
+          }
+          continue;
+        }
+        if (roll < 0.2) {
+          // Parking lot: flat asphalt with painted bays.
+          this.parkingLots.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+          continue;
+        }
+        const palette = downtown ? DOWNTOWN_COLORS : BUILDING_COLORS;
+        const tall = downtown && hash2(i, j, 11) < 0.6;
+        if (hash2(i, j, 21) < 0.45) {
+          // One big building filling most of the block.
+          const inset = 14 + hash2(i, j, 31) * 30;
+          const b = {
+            x: x0 + inset, y: y0 + inset,
+            w: x1 - x0 - inset * 2, h: y1 - y0 - inset * 2,
+            color: palette[Math.floor(hash2(i, j, 41) * palette.length)],
+            roof: ROOF_COLORS[Math.floor(hash2(i, j, 51) * ROOF_COLORS.length)],
+            height: tall ? 3 + Math.floor(hash2(i, j, 61) * 4) : 1 + Math.floor(hash2(i, j, 61) * 2),
+            seed: Math.floor(hash2(i, j, 71) * 1e9),
+            downtown,
+          };
+          this.buildings.push(b);
+        } else {
+          // Four smaller buildings, one per quadrant.
+          const mx = (x0 + x1) / 2; const my = (y0 + y1) / 2;
+          const quads = [[x0, y0, mx, my], [mx, y0, x1, my], [x0, my, mx, y1], [mx, my, x1, y1]];
+          for (let q = 0; q < 4; q += 1) {
+            if (hash2(i, j, 80 + q) < 0.18) {
+              this.trees.push({ x: (quads[q][0] + quads[q][2]) / 2, y: (quads[q][1] + quads[q][3]) / 2, r: 12 });
+              continue;
+            }
+            const inset = 8 + hash2(i, j, 90 + q) * 14;
+            this.buildings.push({
+              x: quads[q][0] + inset, y: quads[q][1] + inset,
+              w: quads[q][2] - quads[q][0] - inset * 2, h: quads[q][3] - quads[q][1] - inset * 2,
+              color: palette[Math.floor(hash2(i, j, 100 + q) * palette.length)],
+              roof: ROOF_COLORS[Math.floor(hash2(i, j, 110 + q) * ROOF_COLORS.length)],
+              height: tall ? 2 + Math.floor(hash2(i, j, 120 + q) * 3) : 1,
+              seed: Math.floor(hash2(i, j, 130 + q) * 1e9),
+              downtown,
+            });
+          }
+        }
+        // A tree or two on the block corners.
+        if (hash2(i, j, 140) < 0.5) {
+          this.trees.push({ x: x0 + 12, y: y0 + 12, r: 8 + hash2(i, j, 141) * 6 });
+          this.trees.push({ x: x1 - 12, y: y1 - 12, r: 8 + hash2(i, j, 142) * 6 });
+        }
+      }
+    }
+    // Street lamps along every road, every 200 px.
+    for (const line of ROAD_LINES) {
+      for (let p = 100; p < WORLD; p += 200) {
+        this.lamps.push({ x: line + ROAD_HALF + 6, y: p });
+        this.lamps.push({ x: p, y: line - ROAD_HALF - 6 });
+      }
+    }
+    // Palm trees along the beach.
+    for (let x = 300; x < WORLD; x += 130) {
+      this.trees.push({ x: x + rng.range(-20, 20), y: 3020 + rng.range(-8, 8), r: 11, palm: true });
+    }
+  }
+
+  isOnRoad(x, y) {
+    for (const line of ROAD_LINES) {
+      if (Math.abs(x - line) <= ROAD_HALF || Math.abs(y - line) <= ROAD_HALF) return true;
+    }
+    return false;
+  }
+
+  isWater(x, y) { return x < 120 || x > 3080 || y > 3120; }
+  isSand(x, y) { return y > 2960 && y <= 3120 && x >= 120 && x <= 3080; }
+
+  buildingAt(x, y) {
+    for (let i = 0; i < this.buildings.length; i += 1) {
+      const b = this.buildings[i];
+      if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b;
+    }
+    return null;
+  }
+
+  // Circle vs buildings + world bounds. Returns the building hit, or null.
+  collideCircle(x, y, r) {
+    if (x - r < 0 || y - r < 0 || x + r > WORLD || y + r > WORLD) return 'bounds';
+    for (let i = 0; i < this.buildings.length; i += 1) {
+      const b = this.buildings[i];
+      const cx = clamp(x, b.x, b.x + b.w);
+      const cy = clamp(y, b.y, b.y + b.h);
+      const dx = x - cx; const dy = y - cy;
+      if (dx * dx + dy * dy < r * r) return b;
+    }
+    return null;
+  }
+
+  // Axis-aligned box vs buildings. Used by cars (approximated by their centre circle).
+  collideCar(x, y, r) { return this.collideCircle(x, y, r); }
+
+  nearestRoadPoint(x, y) {
+    let bx = x; let by = y; let best = Infinity;
+    for (const line of ROAD_LINES) {
+      const d = Math.abs(x - line);
+      if (d < best) { best = d; bx = line; by = y; }
+      const d2 = Math.abs(y - line);
+      if (d2 < best) { best = d2; bx = x; by = line; }
+    }
+    return { x: bx, y: by };
+  }
+
+  randomRoadPoint(rng) {
+    const vertical = rng.chance(0.5);
+    const line = rng.pick(ROAD_LINES);
+    const along = rng.range(160, WORLD - 160);
+    return vertical ? { x: line, y: along } : { x: along, y: line };
+  }
+
+  randomSidewalkPoint(rng) {
+    // A point on a block edge (the sidewalk ring around a block).
+    const i = rng.int(0, ROAD_LINES.length - 2);
+    const j = rng.int(0, ROAD_LINES.length - 2);
+    const x0 = ROAD_LINES[i] + ROAD_HALF + 6;
+    const y0 = ROAD_LINES[j] + ROAD_HALF + 6;
+    const x1 = ROAD_LINES[i + 1] - ROAD_HALF - 6;
+    const y1 = ROAD_LINES[j + 1] - ROAD_HALF - 6;
+    const side = rng.int(0, 3);
+    if (side === 0) return { x: rng.range(x0, x1), y: y0 };
+    if (side === 1) return { x: rng.range(x0, x1), y: y1 };
+    if (side === 2) return { x: x0, y: rng.range(y0, y1) };
+    return { x: x1, y: rng.range(y0, y1) };
+  }
+
+  randomIntersection(rng) {
+    return { x: rng.pick(ROAD_LINES), y: rng.pick(ROAD_LINES) };
+  }
+}
